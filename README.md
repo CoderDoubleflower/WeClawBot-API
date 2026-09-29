@@ -20,6 +20,7 @@
 - **持久化存储**：登录凭证（Token、游标等）自动保存，重启后自动重连
 - **命令行交互**：内置简易控制台，可直接在终端中收发微信消息
 - **HTTP API**：提供标准 RESTful 接口，支持通过 API 发送文本消息及设置“正在输入”状态
+- **Bark 兼容接口**：支持 Bark 格式的 GET / POST 调用，将通知转发到对应账号的微信
 
 ## 部署
 
@@ -93,7 +94,7 @@ API 支持 `GET` 和 `POST` 请求，兼容以下多种提交方式：
 
 ### 身份验证
 
-所有接口均需验证 `api_token`（可通过 `/bots` 命令或查看 `config/auth.json` 获取）
+所有接口均需验证 `api_token`（可通过 `/bots` 命令或查看 `config/auth.json` 获取）。Bark 接口使用它作为 `key` / `device_key`，原有 `/bots/` 接口的传递方式如下。
 
 你可以通过以下任一方式传递 Token：
 
@@ -145,9 +146,65 @@ curl -X POST http://192.168.8.8:26322/bots/{xxx@im.bot}/typing \
   }'
 ```
 
-### 响应格式
+### Bark 兼容调用
 
-所有 API 均返回标准 JSON 结构：
+兼容 [Bark 官方文档](https://github.com/Finb/Bark/blob/master/docs/en-us/tutorial.md)中的常用文本推送格式。将 Bark 服务地址改为本服务地址，设备 Key 填写目标微信账号的 `api_token`，无需另传 `bot_id`。
+
+支持以下路径（均可使用 GET / POST）：
+
+```text
+/{key}?body=正文&title=标题
+/{key}/{body}
+/{key}/{title}/{body}
+/{key}/{title}/{subtitle}/{body}
+/push
+```
+
+POST 支持 JSON、URL 编码表单和 multipart 表单；GET 支持 Query 参数。`/push` 通过 `device_key` 指定账号，其余路径使用 `{key}`。路径中的标题、副标题、正文优先于提交的同名参数，路径内容请进行 URL 编码（尤其是 `/`、`?`、`#` 和换行）。
+
+| 参数 | 说明 |
+| --- | --- |
+| `device_key` | `/push` 的必填参数，值为账号的 `api_token` |
+| `title` | 标题 |
+| `subtitle` | 副标题 |
+| `body` | 正文；标题、副标题、正文至少提供一项 |
+| `url` | 可选链接，追加到文本末尾 |
+
+非空的标题、副标题、正文和链接以换行拼接为一条微信消息。`sound`、`icon`、`group`、`badge` 等客户端通知选项会被忽略；不支持 `device_keys` 批量推送、`ciphertext` 加密推送或 Bark App 的设备注册。单次请求体上限为 1 MiB。
+
+仍需先在微信向 ClawBot 发送一条消息以激活发信上下文。
+
+```bash
+# GET 路径格式
+curl 'http://192.168.8.8:26322/{api_token}/Hello'
+
+# GET Query 格式，自动编码参数
+curl -G 'http://192.168.8.8:26322/{api_token}' \
+  --data-urlencode 'title=任务完成' \
+  --data-urlencode 'body=备份已完成'
+
+# POST JSON
+curl 'http://192.168.8.8:26322/push' \
+  -H 'Content-Type: application/json' \
+  -d '{"device_key":"{api_token}","title":"任务完成","body":"备份已完成","url":"https://example.com"}'
+
+# POST 表单
+curl 'http://192.168.8.8:26322/{api_token}' \
+  --data-urlencode 'title=任务完成' \
+  --data-urlencode 'body=备份已完成'
+```
+
+Bark 接口返回 `code`、`message`、`timestamp`（Unix 秒），HTTP 状态码与 `code` 一致：
+
+```json
+{"code":200,"message":"success","timestamp":1770000000}
+```
+
+参数错误或上下文未就绪返回 400，Key 无效返回 401，不支持的请求方法返回 405，微信发送失败返回 500。
+
+### 原有接口响应格式
+
+`/bots/` 接口返回以下 JSON 结构：
 
 **成功响应 (200 OK):**
 ```json

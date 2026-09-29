@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -126,7 +127,128 @@ func getReqParam(r *http.Request, key string, jsonBody map[string]interface{}) s
 	return r.FormValue(key)
 }
 
+func handleBark(w http.ResponseWriter, r *http.Request) {
+	reply := func(code int, message string) {
+		sendJSON(w, code, map[string]interface{}{
+			"code": code, "message": message, "timestamp": time.Now().Unix(),
+		})
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		w.Header().Set("Allow", "GET, POST")
+		reply(http.StatusMethodNotAllowed, "Method Not Allowed")
+		return
+	}
+
+	// 先分段再解码，保留正文中经过编码的斜杠。
+	parts := strings.Split(strings.TrimPrefix(r.URL.EscapedPath(), "/"), "/")
+	if parts[0] == "" || len(parts) > 4 {
+		reply(http.StatusNotFound, "Not Found")
+		return
+	}
+	for i, part := range parts {
+		value, err := url.PathUnescape(part)
+		if err != nil {
+			reply(http.StatusBadRequest, "Invalid path encoding")
+			return
+		}
+		parts[i] = value
+	}
+
+	var params struct {
+		DeviceKey string `json:"device_key"`
+		Title     string `json:"title"`
+		Subtitle  string `json:"subtitle"`
+		Body      string `json:"body"`
+		URL       string `json:"url"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	contentType := r.Header.Get("Content-Type")
+	if contentType != "" {
+		var err error
+		contentType, _, err = mime.ParseMediaType(contentType)
+		if err != nil {
+			reply(http.StatusBadRequest, "Invalid Content-Type")
+			return
+		}
+	}
+	if contentType == "application/json" {
+		body, err := io.ReadAll(r.Body)
+		if err != nil || json.Unmarshal(body, &params) != nil {
+			reply(http.StatusBadRequest, "Invalid JSON body")
+			return
+		}
+	} else {
+		var err error
+		if contentType == "multipart/form-data" {
+			err = r.ParseMultipartForm(1 << 20)
+			if r.MultipartForm != nil {
+				defer r.MultipartForm.RemoveAll()
+			}
+		} else {
+			err = r.ParseForm()
+		}
+		if err != nil {
+			reply(http.StatusBadRequest, "Invalid form body")
+			return
+		}
+		params.DeviceKey = r.FormValue("device_key")
+		params.Title = r.FormValue("title")
+		params.Subtitle = r.FormValue("subtitle")
+		params.Body = r.FormValue("body")
+		params.URL = r.FormValue("url")
+	}
+	if parts[0] != "push" || len(parts) != 1 {
+		params.DeviceKey = parts[0]
+	}
+	switch len(parts) {
+	case 2:
+		params.Body = parts[1]
+	case 3:
+		params.Title, params.Body = parts[1], parts[2]
+	case 4:
+		params.Title, params.Subtitle, params.Body = parts[1], parts[2], parts[3]
+	}
+
+	// 在锁内取得快照，避免监听协程更新上下文时并发读取。
+	var user UserConfig
+	configLock.Lock()
+	for _, candidate := range cfg.Bots {
+		if params.DeviceKey != "" && candidate.APIToken == params.DeviceKey {
+			user = *candidate
+			break
+		}
+	}
+	configLock.Unlock()
+	if user.APIToken == "" {
+		reply(http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+	var lines []string
+	for _, value := range []string{params.Title, params.Subtitle, params.Body} {
+		if value != "" {
+			lines = append(lines, value)
+		}
+	}
+	if len(lines) == 0 {
+		reply(http.StatusBadRequest, "Missing title, subtitle or body")
+		return
+	}
+	if params.URL != "" {
+		lines = append(lines, params.URL)
+	}
+	if user.IlinkUserID == "" || user.ContextToken == "" {
+		reply(http.StatusBadRequest, "Context not ready")
+		return
+	}
+	if err := sendMessage(&user, user.IlinkUserID, strings.Join(lines, "\n"), user.ContextToken); err != nil {
+		reply(http.StatusInternalServerError, err.Error())
+		return
+	}
+	reply(http.StatusOK, "success")
+}
+
 func startAPIServer(port int) {
+	http.HandleFunc("/", handleBark)
 	http.HandleFunc("/bots/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/bots/")
 		parts := strings.Split(path, "/")
