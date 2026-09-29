@@ -24,6 +24,8 @@
 
 ## 部署
 
+以下示例使用本仓库 [Docker Publish 工作流](.github/workflows/docker-publish.yml)发布到 GitHub Container Registry 的镜像 `ghcr.io/coderdoubleflower/weclawbot-api:main`。`main` 标签对应主分支构建，支持 `linux/amd64` 和 `linux/arm64`。
+
 ### Docker Compose (推荐)
 
 创建 `docker-compose.yml` 文件：
@@ -32,7 +34,7 @@
 name: weclawbot-api
 services:
   weclawbot-api:
-    image: cp0204/weclawbot-api:latest
+    image: ghcr.io/coderdoubleflower/weclawbot-api:main
     container_name: weclawbot-api
     ports:
       - "26322:26322"
@@ -49,7 +51,7 @@ docker run -d \
   -p 26322:26322 \
   -v ./config:/app/config \
   --restart unless-stopped \
-  cp0204/weclawbot-api:latest
+  ghcr.io/coderdoubleflower/weclawbot-api:main
 ```
 
 ### 初次扫码登录
